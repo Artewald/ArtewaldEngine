@@ -1,5 +1,5 @@
 [package]
-name = "ArtewaldEngine"
+name = "artewald_engine"
 version = "0.1.0"
 edition = "2021"
 
