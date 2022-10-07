@@ -1,21 +1,16 @@
-use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage, view};
+use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage};
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::descriptor_set::layout::{DescriptorSetLayout, DescriptorType};
-use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
+use vulkano::device::physical::{PhysicalDeviceType};
 use vulkano::format::Format;
-use vulkano::image::view::{ImageView, ImageViewCreateInfo};
-use vulkano::image::{ImageUsage, SwapchainImage, ImageAccess, ImageSubresourceRange, ImageAspects, ImageViewType, ImageViewAbstract, StorageImage, ImageDimensions};
+use vulkano::image::view::{ImageView};
+use vulkano::image::{ImageUsage, SwapchainImage, ImageAccess, ImageViewAbstract, StorageImage, ImageDimensions};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::library::VulkanLibrary;
 use vulkano::memory::pool::{PotentialDedicatedAllocation, StandardMemoryPool, StandardMemoryPoolAlloc};
-use vulkano::pipeline::graphics::render_pass;
-use vulkano::pipeline::graphics::viewport::Viewport;
-use vulkano::render_pass::{RenderPass, Framebuffer, FramebufferCreateInfo};
 use vulkano::shader::ShaderModule;
-use vulkano::swapchain::display::DisplayMode;
-use vulkano::swapchain::{Surface, Swapchain, SwapchainCreateInfo, PresentMode, SwapchainCreationError, acquire_next_image, self};
-use vulkano::sync::PipelineStage;
-use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, Queue, DeviceExtensions, self};
+use vulkano::swapchain::{Surface, Swapchain, SwapchainCreateInfo, PresentMode, SwapchainCreationError};
+use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, Queue, DeviceExtensions};
 use vulkano_win::VkSurfaceBuild;
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
@@ -97,11 +92,6 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
 
         let image_format = Some(device.physical_device().surface_formats(&surface, Default::default()).unwrap()[0].0);
 
-        // let s_f = Some(device.physical_device().surface_formats(&surface, Default::default()).unwrap()).unwrap();
-        // for x in s_f {
-        //     println!("{}", x.0 as i32);
-        // }
-
         Swapchain::new(
             device.clone(),
             surface.clone(),
@@ -126,7 +116,6 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
 }
 
 pub fn create_main_shader(device: Arc<Device>) -> Arc<ShaderModule> {
-
     mod cs {
         vulkano_shaders::shader! {
             ty: "compute",
