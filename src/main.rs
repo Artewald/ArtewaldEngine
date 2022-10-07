@@ -1,11 +1,15 @@
+use std::{time::Instant};
+
 use utils::{setup_vulkan, create_main_shader, create_buffer, create_sets, create_render_image};
 use vulkano::{pipeline::{ComputePipeline, Pipeline, PipelineBindPoint}, command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, CopyImageInfo}, sync::{self, GpuFuture, FlushError}, image::{ImageAccess}, swapchain::{self, acquire_next_image, AcquireError}};
 use winit::{event_loop::{EventLoop, ControlFlow}, event::{Event, WindowEvent}};
 
-
 mod utils;
 
 fn main() {
+
+    // Settings
+    let print_render_info = true;
 
     // Setup window and device
     let event_loop = EventLoop::new();
@@ -35,6 +39,8 @@ fn main() {
     // Main render loop
     let mut recreate_swapchain = false;
     let mut prev_frame_end = Some(sync::now(vulkan_data.device.clone()).boxed());
+    
+    let mut time = Instant::now();
     
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -103,6 +109,12 @@ fn main() {
                         prev_frame_end = Some(sync::now(vulkan_data.device.clone()).boxed());
                     }
                     Err(e) => panic!("Failed to flush future: {}", e),
+                }
+
+                if print_render_info {
+                    println!("Render time: {}", time.elapsed().as_millis());
+                    print!("\x1B[2J\x1B[1;1H");
+                    time = Instant::now();
                 }
                 
             },
