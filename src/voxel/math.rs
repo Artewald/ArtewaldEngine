@@ -1,4 +1,4 @@
-use std::ops::{Mul, Add, Sub};
+use std::{ops::{Mul, Add, Sub}, fmt::{Display, Formatter, Result}};
 
 #[derive(Debug, Copy, Clone)]
 pub struct Vec2<T> {
@@ -36,17 +36,51 @@ impl<T> Vec2<T> {
     }
 }
 
+impl<T: PartialOrd> Vec2<T> {
+    /// Returns true if `self` is in range of `of_other_vec`
+    pub fn in_range(self, of_other_vec: Self) -> bool {
+        self.x >= of_other_vec.x && self.y <= of_other_vec.y
+    }
+
+    pub fn overlapping(self, other: Self) -> bool {
+        (other.x <= self.x && other.y >= self.y)
+        || (other.x >= self.x && other.y >= self.y && other.x <= self.y)
+        || (other.x <= self.x && other.y <= self.y && other.y >= self.x)
+        // (self.x <= other.x && self.y >= other.y)
+        // || (self.x >= other.x && self.y >= other.y && self.x <= other.y)
+        // || (self.x <= other.x && self.y <= other.y && self.y >= other.x)
+    }
+}
+
+impl<T: Eq> Vec2<T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x && self.y == other.y
+    }
+}
+
 impl<T: Sub<Output=T>> Vec2<T> {
-    // # NOTE!
-    // Returns may be negative! Be sure to convert to positive using .abs() if applicable
+    /// # NOTE!
+    /// Returns may be negative! Be sure to convert to positive using .abs() if applicable
     pub fn length(self) -> T {
         self.x - self.y
+    }
+}
+
+impl<T: Display> Display for Vec2<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "({}, {})", self.x, self.y)
     }
 }
 
 impl<T> Vec3<T> {
     pub fn new(x: T, y: T, z: T) -> Self {
         Vec3{x, y, z}
+    }
+}
+
+impl<T: Display> Display for Vec3<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "({}, {}, {})", self.x, self.y, self.z)
     }
 }
 
@@ -85,5 +119,11 @@ impl<T: Add<Output=T>> Add for Vec4<T> {
 
     fn add(self, rhs: Self) -> Self {
         Self::new(self.x + rhs.x, self.y + rhs.y, self.z + rhs.z, self.w + rhs.w)
+    }
+}
+
+impl<T: Display> Display for Vec4<T> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "({}, {}, {}, {})", self.x, self.y, self.z, self.w)
     }
 }
