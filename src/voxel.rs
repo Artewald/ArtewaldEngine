@@ -6,8 +6,8 @@ pub mod math;
 
 
 // Constants
-const CHUNKPOWER: u32 = 8;
-const CHUNKSIZE: u32 = (4 as u32).pow(CHUNKPOWER);
+pub const CHUNKPOWER: u32 = 8;
+pub const CHUNKSIZE: u32 = (4 as u32).pow(CHUNKPOWER);
 
 
 #[derive(Debug, Clone)]
@@ -47,6 +47,8 @@ impl Display for ColorWeight {
 }
 
 impl Voxel {
+    /// # Panics
+    /// This function panics if the weight(volume) of a node somehow becomes negative
     fn recursive_color_calculator(&mut self) -> ColorWeight {
         let mut actual_children: Vec<Voxel> = vec![];
         for child in self.children.clone() {
@@ -81,11 +83,10 @@ impl Voxel {
 
         let mut total_weight: f32 = 0.0;
         for color_weight in color_weights {
+            if color_weight.weight < 0.0 {
+                panic!("Voxel::recursive_color_calculator(): TheColorWeight should never be less than zero!");
+            }
             total_weight += color_weight.weight;
-        }
-
-        if total_weight < 0.0 {
-            panic!("Voxel: TheColorWeight should never be less than zero!");
         }
 
         self.color = Vec4::new(0.0, 0.0, 0.0, 0.0);
@@ -154,7 +155,12 @@ impl Voxel {
 
 impl Chunk {
     /// Initializes empty chunk with specified depth.
+    /// # Panics
+    /// The function panics if the `depth` value is higher than `CHUNKPOWER`*2. 
     pub fn new(position: Vec2<i128>, depth: u32) -> Chunk {
+        if depth > CHUNKPOWER*2 {
+            panic!("Chunk::new(): A depth higher than the CHUNKPOWER*2 is not supported at this time");
+        }
         Chunk { position: position, depth: depth, start_voxel: Voxel { x_range: Vec2::new(0 as f32, CHUNKSIZE as f32),
                                                                        y_range: Vec2::new(0 as f32, CHUNKSIZE as f32),
                                                                        z_range: Vec2::new(0 as f32, CHUNKSIZE as f32),
@@ -162,6 +168,7 @@ impl Chunk {
                                                                        children: Default::default() } }
     }
 
+    /// Fills the voxels in the specified range. However, the precision just goes as low as the `depth` specified for the chunk. 
     pub fn fill_voxels(&mut self, fill_range: Vec3<Vec2<u32>>, color: Vec4<f32>) {
         self.start_voxel.traverse_and_color(self.depth, 0, fill_range, color);
         self.start_voxel.recursive_color_calculator();
