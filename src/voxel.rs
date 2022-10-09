@@ -47,7 +47,7 @@ impl Display for ColorWeight {
 }
 
 impl Voxel {
-    fn recoursive_color_calculator(&mut self) -> ColorWeight {
+    fn recursive_color_calculator(&mut self) -> ColorWeight {
         let mut actual_children: Vec<Voxel> = vec![];
         for child in self.children.clone() {
             if !child.is_none() {
@@ -72,7 +72,7 @@ impl Voxel {
         for i in 0..self.children.len() {
             let mut cw = ColorWeight {color: Vec4::new(0.0, 0.0, 0.0, 0.0), weight: empty_weight};
             if self.children[i].is_some() {
-                cw = self.children[i].as_deref_mut().unwrap().recoursive_color_calculator();
+                cw = self.children[i].as_deref_mut().unwrap().recursive_color_calculator();
             }
 
             color_weights.push(cw);
@@ -164,7 +164,7 @@ impl Chunk {
 
     pub fn fill_voxels(&mut self, fill_range: Vec3<Vec2<u32>>, color: Vec4<f32>) {
         self.start_voxel.traverse_and_color(self.depth, 0, fill_range, color);
-        self.start_voxel.recoursive_color_calculator();
+        self.start_voxel.recursive_color_calculator();
     }
 
     pub fn print_chunk(self) {
