@@ -1,5 +1,7 @@
 use std::{ops::{Mul, Add, Sub}, fmt::{Display, Formatter, Result}};
 
+use bytemuck::{Pod, Zeroable};
+
 #[derive(Debug, Copy, Clone)]
 pub struct Vec2<T> {
     pub x: T,

@@ -1,5 +1,7 @@
 use std::fmt::{Display, Formatter, Result};
 
+use bytemuck::{Pod, Zeroable};
+
 use self::math::{Vec2, Vec4, Vec3};
 
 pub mod math;
@@ -46,17 +48,28 @@ impl Display for ColorWeight {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[repr(C)]
 pub struct VoxelData {
-    pub x_range: Vec2<f32>,
-    pub y_range: Vec2<f32>,
-    pub z_range: Vec2<f32>,
-    pub color: Vec4<f32>,
+    pub x_start: f32,
+    pub x_stop: f32,
+    pub y_start: f32,
+    pub y_stop: f32,
+    pub z_start: f32,
+    pub z_stop: f32,
+    pub color_r: f32,
+    pub color_g: f32,
+    pub color_b: f32,
+    pub color_a: f32,
 }
 
 impl Display for VoxelData {
     fn fmt(&self, f: &mut Formatter<'_>) -> Result {
-        write!(f, "{{\n\tx_range: {},\n\ty_range: {},\n\tz_range: {},\n\tcolor: {}\n}}", self.x_range, self.y_range, self.z_range, self.color)
+        let x_range = Vec2::new(self.x_start, self.x_stop);
+        let y_range = Vec2::new(self.y_start, self.y_stop);
+        let z_range = Vec2::new(self.z_start, self.z_stop);
+        let color = Vec4::new(self.color_r, self.color_g, self.color_b, self.color_a);
+        write!(f, "{{\n\tx_range: {},\n\ty_range: {},\n\tz_range: {},\n\tcolor: {}\n}}", x_range, y_range, z_range, color)
     }
 }
 
@@ -175,7 +188,7 @@ impl Voxel {
         }
 
         if voxels.len() == 0 {
-            return vec![VoxelData { x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color: self.color }]
+            return vec![VoxelData { x_start: self.x_range.x, x_stop: self.x_range.y, y_start: self.y_range.x, y_stop: self.y_range.y, z_start: self.z_range.x, z_stop: self.z_range.y, color_r: self.color.r(), color_g: self.color.g(), color_b: self.color.b(), color_a: self.color.a() }]
         }
 
         voxels
@@ -211,7 +224,7 @@ impl Chunk {
     pub fn get_sorted_leaf_nodes(self) -> Vec<VoxelData> {
         let mut leaf_nodes = self.start_voxel.traverse_and_append();
         //leaf_nodes.sort_unstable_by(|a, b| (a.x_range.x <= b.x_range.x));
-        leaf_nodes.sort_unstable_by_key(|node| (node.x_range.x as u64, node.x_range.length().abs() as u64, node.y_range.x as u64, node.y_range.length().abs() as u64, node.z_range.x as u64, node.z_range.length().abs() as u64)); // , 
+        leaf_nodes.sort_unstable_by_key(|node| (node.x_start as u64, (node.x_start - node.x_stop).abs() as u64, node.y_start as u64, (node.y_start - node.y_stop).abs() as u64, node.z_start as u64, (node.z_start - node.z_stop).abs() as u64)); // Could reverse lenght sort by applying * -1
         leaf_nodes
     }
 }
