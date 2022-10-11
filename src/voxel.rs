@@ -46,6 +46,20 @@ impl Display for ColorWeight {
     }
 }
 
+#[derive(Debug, Copy, Clone)]
+pub struct VoxelData {
+    pub x_range: Vec2<f32>,
+    pub y_range: Vec2<f32>,
+    pub z_range: Vec2<f32>,
+    pub color: Vec4<f32>,
+}
+
+impl Display for VoxelData {
+    fn fmt(&self, f: &mut Formatter<'_>) -> Result {
+        write!(f, "{{\n\tx_range: {},\n\ty_range: {},\n\tz_range: {},\n\tcolor: {}\n}}", self.x_range, self.y_range, self.z_range, self.color)
+    }
+}
+
 impl Voxel {
     /// # Panics
     /// This function panics if the weight(volume) of a node somehow becomes negative
@@ -151,6 +165,21 @@ impl Voxel {
             child.unwrap().traverse_and_print_voxel(current_depth + 1);
         }
     }
+
+    fn traverse_and_append(self) -> Vec<VoxelData> {
+        let mut voxels = vec![];
+        for child in self.children {
+            if child.is_some() {
+                voxels.append(&mut child.unwrap().traverse_and_append());
+            }
+        }
+
+        if voxels.len() == 0 {
+            return vec![VoxelData { x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color: self.color }]
+        }
+
+        voxels
+    }
 }
 
 impl Chunk {
@@ -176,5 +205,13 @@ impl Chunk {
 
     pub fn print_chunk(self) {
         self.start_voxel.traverse_and_print_voxel(0);
+    }
+
+    /// Get's and sorts all the leaf nodes in this chunk for later use on the GPU.
+    pub fn get_sorted_leaf_nodes(self) -> Vec<VoxelData> {
+        let mut leaf_nodes = self.start_voxel.traverse_and_append();
+        //leaf_nodes.sort_unstable_by(|a, b| (a.x_range.x <= b.x_range.x));
+        leaf_nodes.sort_unstable_by_key(|node| (node.x_range.x as u64, node.x_range.length().abs() as u64, node.y_range.x as u64, node.y_range.length().abs() as u64, node.z_range.x as u64, node.z_range.length().abs() as u64)); // , 
+        leaf_nodes
     }
 }
