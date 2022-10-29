@@ -1,3 +1,5 @@
+use bytemuck::{Pod, Zeroable};
+use nalgebra::{Matrix4, Vector3, Vector4, Point3};
 use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage};
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::descriptor_set::layout::{DescriptorSetLayout, DescriptorType};
@@ -32,6 +34,49 @@ pub struct RenderImageData {
     pub image: Arc<StorageImage>,
     pub buffer: Arc<CpuAccessibleBuffer<[u8]>>,
     pub view: Arc<ImageView<StorageImage<Arc<StandardMemoryPool>>>>,
+}
+
+#[derive(Debug, Copy, Clone, Pod, Zeroable)]
+#[repr(C)]
+pub struct CameraData {
+    pub field_of_view: u32,
+    pub render_distance: f32,
+    pub aspect_ratio: f32,
+    pub fov_tan: f32,
+    pub raw_camera_to_world: Matrix4<f32>,
+    pub clear_color: Vector4<f32>,
+}
+
+impl CameraData {
+    fn create_camera_to_world_space(forward: Vector3<f32>, up: Vector3<f32>) -> Matrix4<f32> {
+        let camera_to_world = Matrix4::look_at_rh(&Point3::new(0.0, 0.0, 0.0), &Point3::new(forward.x, forward.y, forward.z), &up);//Matrix4::identity();
+        // for x in 0..3 {
+        //     camera_to_world[x * 4] = right[x];
+        //     camera_to_world[x * 4 + 1] = up[x];
+        //     camera_to_world[x * 4 + 2] = -forward[x];
+        // }
+        // camera_to_world = camera_to_world.try_inverse().unwrap();
+        camera_to_world
+    }
+
+    pub fn new(fov: u32, render_distance: f32, aspect_ratio: f32, target: Vector3<f32>, up_ref: Vector3<f32>, clear_color: Vector4<f32>) -> Self {
+        let forward: Vector3<f32> = target.normalize();
+        let right: Vector3<f32> = forward.cross(&up_ref).normalize();
+        let up: Vector3<f32> = right.cross(&forward).normalize();
+        CameraData { field_of_view: fov,
+                        render_distance,
+                        aspect_ratio, 
+                        fov_tan: (fov as f32/2.0).to_radians().tan(),
+                        raw_camera_to_world: Self::create_camera_to_world_space(forward, up),
+                        clear_color: clear_color, }
+    }
+
+    pub fn update_camera_dir(&mut self, target: Vector3<f32>, up_ref: Vector3<f32>) {
+        let new_forward: Vector3<f32> = target.normalize();
+        let new_right: Vector3<f32> = new_forward.cross(&up_ref).normalize();
+        let new_up: Vector3<f32> = new_right.cross(&new_forward).normalize();
+        self.raw_camera_to_world = Self::create_camera_to_world_space(new_forward, new_up);
+    }
 }
 
 pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Window>>) {
@@ -117,50 +162,12 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
     (VulkanData { instance: instance.clone(), device: device.clone(), queue: queue.clone(), swapchain: swapchain, images: images }, surface)
 }
 
-pub fn create_main_shader(device: Arc<Device>) -> Arc<ShaderModule> {
-    mod cs {
-        vulkano_shaders::shader! {
-            ty: "compute",
-            src: "
-            #version 450
-
-            layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-            
-            struct VoxelData
-            {
-                vec2 x_range;
-                vec2 y_range;
-                vec2 z_range;
-                vec4 color;
-            } voxelData;
-            
-            layout(set = 0, binding = 0) buffer Data {
-                VoxelData data[];
-            } data;
-            
-            layout(set = 1, binding = 0, rgba8) uniform writeonly image2D img_out; 
-            
-            void main() {
-                vec3 lookingDir = vec3(0.0, 0.0, 1.0);
-                vec3 currentPos = vec3(0.0, 0.0, 0.0);
-            
-            
-                uint idx = gl_GlobalInvocationID.x;
-                data.data[idx].x_range *= 12;
-            
-                vec4 color_in_the_end = vec4(0.0, 0.0, 1.0, 1.0);
-                ivec2 IDxy = ivec2(gl_GlobalInvocationID.xy);
-                imageStore(img_out, IDxy, vec4(color_in_the_end.b, color_in_the_end.g, color_in_the_end.r, color_in_the_end.a));
-            }
-            "
-        }
-    }
-    
-    cs::load(device).unwrap()
+pub fn create_raw_camera_data_buffer(data: CameraData, device: Arc<Device>) -> Arc<CpuAccessibleBuffer<CameraData>> {
+    CpuAccessibleBuffer::from_data(device.clone(), BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data).unwrap()
 }
 
 pub fn create_voxel_buffer(data: Vec<VoxelData>, device: Arc<Device>) -> Arc<CpuAccessibleBuffer<[VoxelData], PotentialDedicatedAllocation<StandardMemoryPoolAlloc>>> {
-    CpuAccessibleBuffer::from_iter(device, BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data.into_iter()).unwrap()
+    CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data.into_iter()).unwrap()
 }
 
 pub fn recreate_swapchain(vulkan_data: &mut VulkanData, dim: PhysicalSize<u32>) {
@@ -175,20 +182,27 @@ pub fn recreate_swapchain(vulkan_data: &mut VulkanData, dim: PhysicalSize<u32>) 
 
 }
 
-pub fn create_sets(set_layouts: &[Arc<DescriptorSetLayout>], buffer: Arc<CpuAccessibleBuffer<[VoxelData]>>, img_view: Arc<dyn ImageViewAbstract>) -> Vec<Arc<PersistentDescriptorSet>> {
+pub fn create_sets(set_layouts: &[Arc<DescriptorSetLayout>], voxel_buffer: Arc<CpuAccessibleBuffer<[VoxelData]>>, misc_buffer: Arc<CpuAccessibleBuffer<CameraData>>, img_view: Arc<dyn ImageViewAbstract>) -> Vec<Arc<PersistentDescriptorSet>> {
     let mut sets = vec![];
 
-    //println!("{}", img_view.format().unwrap() as u32);
-
     for set_layout in set_layouts {
+        let mut visited: Vec<DescriptorType> = vec![];
         for x in set_layout.bindings() {
+            //println!("{:?}", x.1.descriptor_type);
+            if visited.contains(&x.1.descriptor_type) {
+                continue;
+            }
+
             if x.1.descriptor_type == DescriptorType::StorageBuffer {
-                sets.push(PersistentDescriptorSet::new(set_layout.clone(), [WriteDescriptorSet::buffer(0, buffer.clone())]).unwrap());
+                sets.push(PersistentDescriptorSet::new(set_layout.clone(), [WriteDescriptorSet::buffer(0, voxel_buffer.clone()), WriteDescriptorSet::buffer(1, misc_buffer.clone())]).unwrap());
+                
             } else if x.1.descriptor_type == DescriptorType::StorageImage {
                 sets.push(PersistentDescriptorSet::new(set_layout.clone(), [WriteDescriptorSet::image_view(0, img_view.clone())]).unwrap())
             } else {
                 panic!("There exists an unused descriptorset, it should be implemented!");
             }
+
+            visited.push(x.1.descriptor_type);
         }
     }
 
@@ -222,4 +236,191 @@ pub fn create_render_image(vulkan_data: &mut VulkanData) -> RenderImageData {
     let view = ImageView::new_default(image.clone()).unwrap();
 
     RenderImageData { image, buffer, view }
+}
+
+
+
+
+
+
+
+
+
+pub fn create_main_shader(device: Arc<Device>) -> Arc<ShaderModule> {
+    mod cs {
+        vulkano_shaders::shader! {
+            ty: "compute",
+            src: "
+            #version 450
+            layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+            
+            struct VoxelData
+            {
+                vec2 x_range;
+                vec2 y_range;
+                vec2 z_range;
+                vec2 color_rg;
+                vec2 color_ba;
+                uint _0_0_index;
+                uint _0_1_index;
+                uint _0_2_index;
+                uint _0_3_index;
+                uint _1_0_index;
+                uint _1_1_index;
+                uint _1_2_index;
+                uint _1_3_index;
+            };
+            
+            layout(set = 0, binding = 0) readonly buffer Data {
+                VoxelData data[];
+            } voxel_data;
+            
+            layout(set = 0, binding = 1)  readonly buffer RawCameraData {
+                uint field_of_view;
+                float render_distance;
+                float aspectRatio;
+                float fov_tan;
+                mat4 raw_camera_to_world;
+                vec4 clear_color;
+            } rawCameraData;
+            
+            layout(set = 1, binding = 0, rgba8) uniform image2D img_out; 
+            
+            struct ColorHit {
+                bool hit;
+                vec4 color;
+            };
+            
+            struct Camera {
+                uint field_of_view;
+                float render_distance;
+                float aspectRatio;
+                float fov_tan;
+                mat4 camera_to_world;
+                vec4 clear_color;
+            };
+            
+            // Const variables
+            vec3 lookingDir = vec3(0.0, 0.0, 1.0);
+            vec3 currentPos = vec3(0.0, 0.0, 0.0);
+                        
+            // Helper functions
+            ColorHit voxel_hit(ivec3 pos, vec4 clear_col) {
+                ColorHit ret_val;
+                ret_val.hit = false;
+            
+                uint index = voxel_data.data.length()-1;
+                uint counter = 0;
+                uint max_count = 20;
+                while (counter < max_count && !ret_val.hit) {
+                    counter += 1;
+            
+                    VoxelData current_voxel = voxel_data.data[index];
+                    ret_val.color = vec4(current_voxel.color_rg, current_voxel.color_ba);
+            
+                    if (!(current_voxel.x_range.x <= pos.x && pos.x <= current_voxel.x_range.y &&
+                        current_voxel.y_range.x <= pos.y && pos.y <= current_voxel.y_range.y &&
+                        current_voxel.z_range.x <= pos.z && pos.z <= current_voxel.z_range.y)) {
+                        break;
+                    }
+            
+                    if (current_voxel._0_0_index == uint(-1) && current_voxel._0_1_index == uint(-1) &&
+                        current_voxel._0_2_index == uint(-1) && current_voxel._0_3_index == uint(-1) &&
+                        current_voxel._1_0_index == uint(-1) && current_voxel._1_1_index == uint(-1) &&
+                        current_voxel._1_2_index == uint(-1) && current_voxel._1_3_index == uint(-1)) {
+                            ret_val.hit = true;
+                            break;
+                    }
+            
+                    bool x_small = false;
+                    bool y_small = false;
+                    bool z_small = false;
+                
+                    if (pos.x < (current_voxel.x_range.x + current_voxel.x_range.y)/2) x_small = true;
+                    if (pos.y < (current_voxel.y_range.x + current_voxel.y_range.y)/2) y_small = true;
+                    if (pos.z < (current_voxel.z_range.x + current_voxel.z_range.y)/2) z_small = true;
+            
+                    if (x_small && y_small && z_small) {
+                        if (current_voxel._0_0_index != uint(-1)) index = current_voxel._0_0_index;
+                        else break;
+                    } else if (!x_small && y_small && z_small) {
+                        if (current_voxel._0_1_index != uint(-1)) index = current_voxel._0_1_index;
+                        else break;
+                    } else if (x_small && y_small && !z_small) {
+                        if (current_voxel._0_2_index != uint(-1)) index = current_voxel._0_2_index;
+                        else break;
+                    } else if (!x_small && y_small && !z_small) {
+                        if (current_voxel._0_3_index != uint(-1)) index = current_voxel._0_3_index;
+                        else break;
+                    } else if (x_small && !y_small && z_small) {
+                        if (current_voxel._1_0_index != uint(-1)) index = current_voxel._1_0_index;
+                        else break;
+                    } else if (!x_small && !y_small && z_small) {
+                        if (current_voxel._1_1_index != uint(-1)) index = current_voxel._1_1_index;
+                        else break;
+                    } else if (x_small && !y_small && !z_small) {
+                        if (current_voxel._1_2_index != uint(-1)) index = current_voxel._1_2_index;
+                        else break;
+                    } else if (!x_small && !y_small && !z_small) {
+                        if (current_voxel._1_3_index != uint(-1)) index = current_voxel._1_3_index;
+                        else break;
+                    } else {
+                        ret_val.hit = true;
+                        ret_val.color = vec4(0.75, 0.5, 0.25, 1.0);
+                    }
+            
+                }
+                
+                if (!ret_val.hit) ret_val.color = clear_col;
+            
+                return ret_val;
+            }
+            
+            // Main         
+            void main() {
+                ivec2 IDxy = ivec2(gl_GlobalInvocationID.xy);
+            
+                Camera camera;
+                camera.field_of_view = rawCameraData.field_of_view;
+                camera.aspectRatio = rawCameraData.aspectRatio;
+                camera.fov_tan = rawCameraData.fov_tan;
+                camera.camera_to_world = rawCameraData.raw_camera_to_world;
+                camera.clear_color = rawCameraData.clear_color;
+                
+                ivec2 screenSize = imageSize(img_out);
+                vec2 pixel_NCD = vec2((float(IDxy.x)+0.5)/float(screenSize.x), (float(IDxy.y)+0.5)/float(screenSize.y));
+                vec2 camera_pixel = vec2((2 * pixel_NCD.x - 1) * camera.aspectRatio * camera.fov_tan, (1 - 2 * pixel_NCD.y) * camera.fov_tan);
+            
+                highp vec4 world_search_pos = vec4(vec3(camera_pixel.x, camera_pixel.y, -1.0), 0.0)*camera.camera_to_world;
+                highp vec3 current_search_pos = normalize(world_search_pos.xyz);
+                current_search_pos.x = -current_search_pos.x;
+                vec4 color_in_the_end = camera.clear_color;
+                
+                while (length(current_search_pos) < rawCameraData.render_distance) {
+                    ivec3 current_box = ivec3(floor(current_search_pos.x), floor(current_search_pos.y), floor(current_search_pos.z));
+                    ColorHit check = voxel_hit(current_box, camera.clear_color);
+                    if (check.hit) {
+                        color_in_the_end = check.color;
+                        break;
+                    }
+            
+                    highp float multiplier = 999.0;
+                    highp float x_mul = ceil(current_search_pos.x)/current_search_pos.x + 0.001;
+                    highp float y_mul = ceil(current_search_pos.y)/current_search_pos.y + 0.001;
+                    highp float z_mul = ceil(current_search_pos.z)/current_search_pos.z + 0.001;
+                    if (x_mul < multiplier) multiplier = x_mul;
+                    if (y_mul < multiplier) multiplier = y_mul;
+                    if (z_mul < multiplier) multiplier = z_mul;
+                    if (multiplier <= 1.0) multiplier = 1.01;
+            
+                    current_search_pos *= multiplier;
+                }
+            
+                imageStore(img_out, IDxy, vec4(color_in_the_end.b, color_in_the_end.g, color_in_the_end.r, color_in_the_end.a));
+            }
+            "
+        }
+    }
+    
+    cs::load(device).unwrap()
 }
