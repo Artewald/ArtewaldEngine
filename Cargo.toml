@@ -3,6 +3,10 @@ name = "artewald_engine"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+name = "artewald_engine_lib"
+path = "lib/lib.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -12,6 +16,8 @@ vulkano-shaders = "0.31.0"
 vulkano-util = "0.31.0"
 bytemuck = "1.8.0"
 winit = "0.27.3"
+nalgebra = { version = "0.31.2", features = ["bytemuck"] }
+rand = "0.8.5"
 
 [profile.dev.package."*"]
 opt-level = 3
