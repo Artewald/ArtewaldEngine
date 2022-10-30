@@ -3,7 +3,7 @@ use std::{time::Instant, f32::consts::PI};
 use nalgebra::{Vector4, Vector3};
 use utils::{setup_vulkan, create_main_shader, create_sets, create_render_image};
 use vulkano::{pipeline::{ComputePipeline, Pipeline, PipelineBindPoint}, command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, CopyImageInfo, CopyBufferToImageInfo}, sync::{self, GpuFuture, FlushError}, image::{ImageAccess}, swapchain::{self, acquire_next_image, AcquireError}};
-use winit::{event_loop::{EventLoop, ControlFlow}, event::{Event, WindowEvent}, dpi::PhysicalPosition};
+use winit::{event_loop::{EventLoop, ControlFlow}, event::{Event, WindowEvent, VirtualKeyCode}, dpi::PhysicalPosition};
 
 use crate::voxel::{VoxelData};
 
@@ -93,9 +93,13 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
 
             Event::WindowEvent {event: WindowEvent::KeyboardInput {input, ..}, ..} => {
                 if window_focused {
-                    let esc = input.virtual_keycode;
-                    match esc {
-                        Some(_) => *control_flow = ControlFlow::Exit,
+                    let button = input.virtual_keycode;
+                    match button {
+                        Some(btn) => {
+                            if btn == VirtualKeyCode::Escape {
+                                *control_flow = ControlFlow::Exit;
+                            }
+                        }
                         None => (),
                     }
                 }
