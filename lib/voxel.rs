@@ -2,7 +2,7 @@ use std::{sync::{Arc, RwLock}, thread::JoinHandle};
 use std::thread;
 
 use bytemuck::{Pod, Zeroable};
-use nalgebra::{Vector2, Vector4, Vector3};
+use nalgebra::{Vector2, Vector4, Vector3, Vector};
 
 use crate::voxel::math::{distance_between_points, view_cm_size};
 use crate::threadpool::ThreadPoolHelper;
@@ -20,9 +20,11 @@ pub const CHUNKSIZE: u32 = (4 as u32).pow(CHUNKPOWER);
 // Structs
 #[derive(Debug, Clone)]
 pub struct Voxel {
-    pub x_range: Vector2<f32>,
-    pub y_range: Vector2<f32>,
-    pub z_range: Vector2<f32>,
+    pub pos: Vector3<f32>,
+    pub range: f32,
+    // pub x_range: Vector2<f32>,
+    // pub y_range: Vector2<f32>,
+    // pub z_range: Vector2<f32>,
     pub color: Vector4<f32>,
     pub children: [Option<Box<Voxel>>; 8]
 }
@@ -52,10 +54,10 @@ struct ParallellVoxelData {
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
 #[repr(C)]
 pub struct VoxelData {
-    pub x_range: Vector2<f32>,
-    pub y_range: Vector2<f32>,
-    pub z_range: Vector2<f32>,
-    // For some reason using a Vector4 does not work, so I need to split the color into two Vector2s.
+    // For some reason using Vector3 and 4 do not work. The data gets get corrupted so I can only use Vector2s
+    pub pos_xy: Vector2<f32>,
+    // The range value is the pos_zw.y value this is done to save space
+    pub pos_zw: Vector2<f32>,
     pub color_rg: Vector2<f32>,
     pub color_ba: Vector2<f32>,
     pub _0_0_index: u32,
@@ -80,9 +82,11 @@ impl Voxel {
             }
         }
 
-        let x_length = vec2_one_d_lenght(self.x_range);
-        let y_length = vec2_one_d_lenght(self.y_range);
-        let z_length = vec2_one_d_lenght(self.z_range);
+        // let length = vec2_one_d_lenght(self.range);
+
+        let x_length = vec2_one_d_lenght(Vector2::new(self.pos.x, self.pos.x + self.range));
+        let y_length = vec2_one_d_lenght(Vector2::new(self.pos.y, self.pos.y + self.range));
+        let z_length = vec2_one_d_lenght(Vector2::new(self.pos.z, self.pos.z + self.range));
 
         if actual_children.len() == 0 {
             return ColorWeight {color: self.color, weight: x_length * y_length * z_length}
@@ -149,10 +153,9 @@ impl Voxel {
             return;
         }
 
-
-        if vec2_one_d_in_range(self.x_range, Vector2::new(fill_range.x.x as f32, fill_range.x.y as f32))
-           && vec2_one_d_in_range(self.y_range, Vector2::new(fill_range.y.x as f32, fill_range.y.y as f32))
-           && vec2_one_d_in_range(self.z_range, Vector2::new(fill_range.z.x as f32, fill_range.z.y as f32))
+        if vec2_one_d_in_range(Vector2::new(self.pos.x, self.pos.x + self.range), Vector2::new(fill_range.x.x as f32, fill_range.x.y as f32))
+           && vec2_one_d_in_range(Vector2::new(self.pos.y, self.pos.y + self.range), Vector2::new(fill_range.y.x as f32, fill_range.y.y as f32))
+           && vec2_one_d_in_range(Vector2::new(self.pos.z , self.pos.z + self.range), Vector2::new(fill_range.z.x as f32, fill_range.z.y as f32))
         {
             self.color = color;
             return;
@@ -167,18 +170,22 @@ impl Voxel {
                 for z in 0..self.children.len()/4 {
 
                     let i = x + z*2 + y*4;
-                    let new_x_u_range = Vector2::new((self.x_range.x + (x as f32 * size)) as u32, (self.x_range.x + ((x as f32 + 1.0) * size)) as u32);
-                    let new_y_u_range = Vector2::new((self.y_range.x + (y as f32 * size)) as u32, (self.y_range.x + ((y as f32 + 1.0) * size)) as u32);
-                    let new_z_u_range = Vector2::new((self.z_range.x + (z as f32 * size)) as u32, (self.z_range.x + ((z as f32 + 1.0) * size)) as u32);
+                    let new_range = size as f32;
+                    let new_pos = Vector3::new(self.pos.x + (x as f32 * size), self.pos.y + (y as f32 * size), self.pos.z + (z as f32 * size));
+                    // let new_x_u_range = Vector2::new((self.x_range.x + (x as f32 * size)) as u32, (self.x_range.x + ((x as f32 + 1.0) * size)) as u32);
+                    // let new_y_u_range = Vector2::new((self.y_range.x + (y as f32 * size)) as u32, (self.y_range.x + ((y as f32 + 1.0) * size)) as u32);
+                    // let new_z_u_range = Vector2::new((self.z_range.x + (z as f32 * size)) as u32, (self.z_range.x + ((z as f32 + 1.0) * size)) as u32);
 
-                    if vec2_one_d_overlapping(fill_range.x, new_x_u_range)
-                       && vec2_one_d_overlapping(fill_range.y, new_y_u_range)
-                       && vec2_one_d_overlapping(fill_range.z, new_z_u_range) 
+                    if vec2_one_d_overlapping(fill_range.x, Vector2::new((new_pos.x) as u32, (new_pos.x + new_range) as u32))
+                       && vec2_one_d_overlapping(fill_range.y, Vector2::new((new_pos.y) as u32, (new_pos.y + new_range) as u32))
+                       && vec2_one_d_overlapping(fill_range.z, Vector2::new((new_pos.z) as u32, (new_pos.z + new_range) as u32)) 
                     {
                         if self.children[i].is_none() {
-                            self.children[i] = Some(Box::new(Voxel { x_range: Vector2::new(new_x_u_range.x as f32, new_x_u_range.y as f32),
-                                                                     y_range: Vector2::new(new_y_u_range.x as f32, new_y_u_range.y as f32),
-                                                                     z_range: Vector2::new(new_z_u_range.x as f32, new_z_u_range.y as f32),
+                            self.children[i] = Some(Box::new(Voxel { // x_range: Vector2::new(new_x_u_range.x as f32, new_x_u_range.y as f32),
+                                                                    //  y_range: Vector2::new(new_y_u_range.x as f32, new_y_u_range.y as f32),
+                                                                    //  z_range: Vector2::new(new_z_u_range.x as f32, new_z_u_range.y as f32),
+                                                                     pos: new_pos,
+                                                                     range: new_range,
                                                                      color: Vector4::new(0.0, 0.0, 0.0, 0.0),
                                                                      children: Default::default() }));
                         }
@@ -219,8 +226,9 @@ impl Voxel {
 
     fn traverse_and_append(&self, camera_pos: Vector3<f64>, pixel_rad: f32, current_vec_len: u32) -> Vec<VoxelData> {
 
-        if view_cm_size(pixel_rad, distance_between_points(camera_pos, Vector3::new(self.x_range.x as f64, self.y_range.x as f64, self.z_range.x as f64))) >= vec2_one_d_lenght(self.x_range) {
-            return vec![VoxelData {x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color_rg:Vector2::new(self.color.x, self.color.y), color_ba:Vector2::new(self.color.z, self.color.w), _0_0_index: u32::MAX, _0_1_index: u32::MAX, _0_2_index: u32::MAX, _0_3_index: u32::MAX, _1_0_index: u32::MAX, _1_1_index: u32::MAX, _1_2_index: u32::MAX, _1_3_index: u32::MAX }]
+        if view_cm_size(pixel_rad, distance_between_points(camera_pos, Vector3::new(0_f64, 0_f64, 0_f64 as f64))) >= self.range {
+            // return vec![VoxelData {x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color_rg:Vector2::new(self.color.x, self.color.y), color_ba:Vector2::new(self.color.z, self.color.w), _0_0_index: u32::MAX, _0_1_index: u32::MAX, _0_2_index: u32::MAX, _0_3_index: u32::MAX, _1_0_index: u32::MAX, _1_1_index: u32::MAX, _1_2_index: u32::MAX, _1_3_index: u32::MAX }]
+            return vec![VoxelData {pos_xy: Vector2::new(self.pos.x, self.pos.y), pos_zw: Vector2::new(self.pos.z, self.range), color_rg:Vector2::new(self.color.x, self.color.y), color_ba:Vector2::new(self.color.z, self.color.w), _0_0_index: u32::MAX, _0_1_index: u32::MAX, _0_2_index: u32::MAX, _0_3_index: u32::MAX, _1_0_index: u32::MAX, _1_1_index: u32::MAX, _1_2_index: u32::MAX, _1_3_index: u32::MAX }]
         }
         
         let mut voxels: Vec<VoxelData> = vec![];
@@ -237,13 +245,14 @@ impl Voxel {
         }
 
         if voxels.len() == 0 {
-            return vec![VoxelData {x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color_rg: Vector2::new(self.color.x, self.color.y), color_ba: Vector2::new(self.color.z, self.color.w), _0_0_index: u32::MAX, _0_1_index: u32::MAX, _0_2_index: u32::MAX, _0_3_index: u32::MAX, _1_0_index: u32::MAX, _1_1_index: u32::MAX, _1_2_index: u32::MAX, _1_3_index: u32::MAX }]
+            //return vec![VoxelData {x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color_rg: Vector2::new(self.color.x, self.color.y), color_ba: Vector2::new(self.color.z, self.color.w), _0_0_index: u32::MAX, _0_1_index: u32::MAX, _0_2_index: u32::MAX, _0_3_index: u32::MAX, _1_0_index: u32::MAX, _1_1_index: u32::MAX, _1_2_index: u32::MAX, _1_3_index: u32::MAX }]
+            return vec![VoxelData {pos_xy: Vector2::new(self.pos.x, self.pos.y), pos_zw: Vector2::new(self.pos.z, self.range), color_rg: Vector2::new(self.color.x, self.color.y), color_ba: Vector2::new(self.color.z, self.color.w), _0_0_index: u32::MAX, _0_1_index: u32::MAX, _0_2_index: u32::MAX, _0_3_index: u32::MAX, _1_0_index: u32::MAX, _1_1_index: u32::MAX, _1_2_index: u32::MAX, _1_3_index: u32::MAX }]
         }
 
-        voxels.append(&mut vec![VoxelData {x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color_rg: Vector2::new(self.color.x, self.color.y), color_ba:Vector2::new(self.color.z, self.color.w), _0_0_index: index_array[0], _0_1_index: index_array[1], _0_2_index: index_array[2], _0_3_index: index_array[3], _1_0_index: index_array[4], _1_1_index: index_array[5], _1_2_index: index_array[6], _1_3_index: index_array[7] }]);
+        //voxels.append(&mut vec![VoxelData {x_range: self.x_range, y_range: self.y_range, z_range: self.z_range, color_rg: Vector2::new(self.color.x, self.color.y), color_ba:Vector2::new(self.color.z, self.color.w), _0_0_index: index_array[0], _0_1_index: index_array[1], _0_2_index: index_array[2], _0_3_index: index_array[3], _1_0_index: index_array[4], _1_1_index: index_array[5], _1_2_index: index_array[6], _1_3_index: index_array[7] }]);
+        voxels.append(&mut vec![VoxelData {pos_xy: Vector2::new(self.pos.x, self.pos.y), pos_zw: Vector2::new(self.pos.z, self.range), color_rg: Vector2::new(self.color.x, self.color.y), color_ba:Vector2::new(self.color.z, self.color.w), _0_0_index: index_array[0], _0_1_index: index_array[1], _0_2_index: index_array[2], _0_3_index: index_array[3], _1_0_index: index_array[4], _1_1_index: index_array[5], _1_2_index: index_array[6], _1_3_index: index_array[7] }]);
         voxels
     }
-
 
 }
 
@@ -255,9 +264,11 @@ impl Chunk {
         if depth > CHUNKPOWER*2 {
             panic!("Chunk::new(): A depth higher than the CHUNKPOWER*2 is not supported at this time");
         }
-        Chunk { position: position, depth: depth, start_voxel: Voxel { x_range: Vector2::new(0 as f32, CHUNKSIZE as f32),
-                                                                       y_range: Vector2::new(0 as f32, CHUNKSIZE as f32),
-                                                                       z_range: Vector2::new(0 as f32, CHUNKSIZE as f32),
+        Chunk { position: position, depth: depth, start_voxel: Voxel { // x_range: Vector2::new(0 as f32, CHUNKSIZE as f32),
+                                                                    //    y_range: Vector2::new(0 as f32, CHUNKSIZE as f32),
+                                                                    //    z_range: Vector2::new(0 as f32, CHUNKSIZE as f32),
+                                                                       pos: Vector3::new(0_f32, 0_f32, 0_f32),
+                                                                       range: CHUNKSIZE as f32,
                                                                        color: Vector4::new(0.0, 0.0, 0.0, 0.0),
                                                                        children: Default::default() }}
     }

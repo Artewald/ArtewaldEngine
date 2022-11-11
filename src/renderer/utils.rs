@@ -256,9 +256,9 @@ pub fn create_main_shader(device: Arc<Device>) -> Arc<ShaderModule> {
             
             struct VoxelData
             {
-                vec2 x_range;
-                vec2 y_range;
-                vec2 z_range;
+                vec2 pos_xy;
+                // The range value is the pos_zw.y value this is done to save space
+                vec2 pos_zw;
                 vec2 color_rg;
                 vec2 color_ba;
                 uint _0_0_index;
@@ -275,14 +275,14 @@ pub fn create_main_shader(device: Arc<Device>) -> Arc<ShaderModule> {
                 VoxelData data[];
             } voxel_data;
             
-            layout(set = 0, binding = 1)  readonly buffer RawCameraData {
+            layout(set = 0, binding = 1)  readonly buffer CameraData {
                 uint field_of_view;
                 float render_distance;
                 float aspectRatio;
                 float fov_tan;
-                mat4 raw_camera_to_world;
+                mat4 camera_to_world;
                 vec4 clear_color;
-            } rawCameraData;
+            } camera;
             
             layout(set = 1, binding = 0, rgba8) uniform image2D img_out; 
             
@@ -291,130 +291,291 @@ pub fn create_main_shader(device: Arc<Device>) -> Arc<ShaderModule> {
                 vec4 color;
             };
             
-            struct Camera {
-                uint field_of_view;
-                float render_distance;
-                float aspectRatio;
-                float fov_tan;
-                mat4 camera_to_world;
-                vec4 clear_color;
+            struct Ray {
+                vec3 origin;
+                vec3 direction;
+            };
+            
+            struct RayHit {
+                bool hit;
+                vec3 normal;
+                vec2 result;
             };
             
             // Const variables
-            vec3 lookingDir = vec3(0.0, 0.0, 1.0);
-            vec3 currentPos = vec3(0.0, 0.0, 0.0);
-                        
+            const uint UINT_MAX = -1;
+            const float INFINITY_F = 1.0/0.0;
+            
             // Helper functions
-            ColorHit voxel_hit(ivec3 pos, vec4 clear_col) {
+            
+            float max_component(vec3 vec) {
+                return max(max(vec.x, vec.y), vec.z);
+            }
+            
+            float min_component(vec3 vec) {
+                return min(min(vec.x, vec.y), vec.z);
+            }
+            
+            
+            // From https://jcgt.org/published/0007/03/04/
+            bool slabs(VoxelData voxel, Ray ray, vec3 invRaydir) {
+                const vec3 p0 = vec3(voxel.pos_xy, voxel.pos_zw.x);
+                const vec3 p1 = vec3(voxel.pos_xy.x + voxel.pos_zw.y, voxel.pos_xy.y + voxel.pos_zw.y, voxel.pos_zw.x + voxel.pos_zw.y);
+                        
+                const vec3 t0 = (p0 - ray.origin) * invRaydir;
+                const vec3 t1 = (p1 - ray.origin) * invRaydir;
+                const vec3 tmin = min(t0,t1), tmax = max(t0,t1);
+                const float tmax_val = min_component(tmax);
+                return max_component(tmin) <= tmax_val && tmax_val >= 0.0;
+            }
+            
+            uint[8] get_children_indices(VoxelData voxel) {
+                return uint[8](voxel._0_0_index, voxel._0_1_index, voxel._0_2_index, voxel._0_3_index, voxel._1_0_index, voxel._1_1_index, voxel._1_2_index, voxel._1_3_index);
+            }
+            
+            bool is_leaf_node(VoxelData voxel) {
+                return voxel._0_0_index == uint(-1) && voxel._0_1_index == uint(-1) &&
+                       voxel._0_2_index == uint(-1) && voxel._0_3_index == uint(-1) &&
+                       voxel._1_0_index == uint(-1) && voxel._1_1_index == uint(-1) &&
+                       voxel._1_2_index == uint(-1) && voxel._1_3_index == uint(-1);
+            }
+            
+            ColorHit fill_hit_color(VoxelData voxel) {
+                ColorHit data;
+                data.color = vec4(voxel.color_rg, voxel.color_ba);
+                data.hit = true;
+                return data;
+            }
+            
+            float get_distance(VoxelData voxel) {
+                return length(vec3(voxel.pos_xy, voxel.pos_zw.x));
+            }
+            
+            bool is_closer(in VoxelData voxel, in float closest) {
+                return get_distance(voxel) < closest;
+            }
+            
+            ColorHit voxel_hit(Ray ray, vec4 clear_col) {
                 ColorHit ret_val;
+                ret_val.color = clear_col;
                 ret_val.hit = false;
-            
-                uint index = voxel_data.data.length()-1;
-                uint counter = 0;
-                uint max_count = 20;
-                while (counter < max_count && !ret_val.hit) {
-                    counter += 1;
-            
-                    VoxelData current_voxel = voxel_data.data[index];
-                    ret_val.color = vec4(current_voxel.color_rg, current_voxel.color_ba);
-            
-                    if (!(current_voxel.x_range.x <= pos.x && pos.x <= current_voxel.x_range.y &&
-                        current_voxel.y_range.x <= pos.y && pos.y <= current_voxel.y_range.y &&
-                        current_voxel.z_range.x <= pos.z && pos.z <= current_voxel.z_range.y)) {
-                        break;
-                    }
-            
-                    if (current_voxel._0_0_index == uint(-1) && current_voxel._0_1_index == uint(-1) &&
-                        current_voxel._0_2_index == uint(-1) && current_voxel._0_3_index == uint(-1) &&
-                        current_voxel._1_0_index == uint(-1) && current_voxel._1_1_index == uint(-1) &&
-                        current_voxel._1_2_index == uint(-1) && current_voxel._1_3_index == uint(-1)) {
-                            ret_val.hit = true;
-                            break;
-                    }
-            
-                    bool x_small = false;
-                    bool y_small = false;
-                    bool z_small = false;
+                float closest = 999999999999999999.0;
+                const vec3 invRaydir = 1.0/ray.direction;
                 
-                    if (pos.x < (current_voxel.x_range.x + current_voxel.x_range.y)/2) x_small = true;
-                    if (pos.y < (current_voxel.y_range.x + current_voxel.y_range.y)/2) y_small = true;
-                    if (pos.z < (current_voxel.z_range.x + current_voxel.z_range.y)/2) z_small = true;
-            
-                    if (x_small && y_small && z_small) {
-                        if (current_voxel._0_0_index != uint(-1)) index = current_voxel._0_0_index;
-                        else break;
-                    } else if (!x_small && y_small && z_small) {
-                        if (current_voxel._0_1_index != uint(-1)) index = current_voxel._0_1_index;
-                        else break;
-                    } else if (x_small && y_small && !z_small) {
-                        if (current_voxel._0_2_index != uint(-1)) index = current_voxel._0_2_index;
-                        else break;
-                    } else if (!x_small && y_small && !z_small) {
-                        if (current_voxel._0_3_index != uint(-1)) index = current_voxel._0_3_index;
-                        else break;
-                    } else if (x_small && !y_small && z_small) {
-                        if (current_voxel._1_0_index != uint(-1)) index = current_voxel._1_0_index;
-                        else break;
-                    } else if (!x_small && !y_small && z_small) {
-                        if (current_voxel._1_1_index != uint(-1)) index = current_voxel._1_1_index;
-                        else break;
-                    } else if (x_small && !y_small && !z_small) {
-                        if (current_voxel._1_2_index != uint(-1)) index = current_voxel._1_2_index;
-                        else break;
-                    } else if (!x_small && !y_small && !z_small) {
-                        if (current_voxel._1_3_index != uint(-1)) index = current_voxel._1_3_index;
-                        else break;
-                    } else {
-                        ret_val.hit = true;
-                        ret_val.color = vec4(0.75, 0.5, 0.25, 1.0);
+                // Look here for tip on how to find the intersection/hit point: https://tavianator.com/2011/ray_box.html
+                // GLSL does not allow for recursive functions, thus it needs to be hard-coded
+                VoxelData temp_voxel = voxel_data.data[voxel_data.data.length()-1];
+                const uint[8] level_0 = get_children_indices(temp_voxel);
+                if (!slabs(temp_voxel, ray, invRaydir)) return ret_val;
+                if (is_leaf_node(temp_voxel)) return fill_hit_color(temp_voxel);
+                for (int i_0 = 0; i_0 < level_0.length(); i_0++) {
+                    if (level_0[i_0] == UINT_MAX) continue;
+                    temp_voxel = voxel_data.data[level_0[i_0]];
+                    const uint[8] level_1 = get_children_indices(temp_voxel);
+                    if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                    if (is_leaf_node(temp_voxel)) {
+                        ret_val = fill_hit_color(temp_voxel);
+                        closest = get_distance(temp_voxel);
+                        continue;
                     }
-            
+                    for (int i_1 = 0; i_1 < level_1.length(); i_1++) {
+                        if (level_1[i_1]== UINT_MAX) continue;
+                        temp_voxel = voxel_data.data[level_1[i_1]];
+                        const uint[8] level_2 = get_children_indices(temp_voxel);
+                        if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                        if (is_leaf_node(temp_voxel)) {
+                            ret_val = fill_hit_color(temp_voxel);
+                            closest = get_distance(temp_voxel);
+                            continue;
+                        }
+                        for (int i_2 = 0; i_2 < level_2.length(); i_2++) {
+                            if (level_2[i_2]== UINT_MAX) continue;
+                            temp_voxel = voxel_data.data[level_2[i_2]];
+                            const uint[8] level_3 = get_children_indices(temp_voxel);
+                            if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                            if (is_leaf_node(temp_voxel)) {
+                                ret_val = fill_hit_color(temp_voxel);
+                                closest = get_distance(temp_voxel);
+                                continue;
+                            }
+                            for (int i_3 = 0; i_3 < level_3.length(); i_3++) {
+                                if (level_3[i_3]== UINT_MAX) continue;
+                                temp_voxel = voxel_data.data[level_3[i_3]];
+                                const uint[8] level_4 = get_children_indices(temp_voxel);
+                                if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                if (is_leaf_node(temp_voxel)) {
+                                    ret_val = fill_hit_color(temp_voxel);
+                                    closest = get_distance(temp_voxel);
+                                    continue;
+                                }
+                                for (int i_4 = 0; i_4 < level_4.length(); i_4++) {
+                                    if (level_4[i_4]== UINT_MAX) continue;
+                                    temp_voxel = voxel_data.data[level_4[i_4]];
+                                    const uint[8] level_5 = get_children_indices(temp_voxel);
+                                    if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                    if (is_leaf_node(temp_voxel)) {
+                                        ret_val = fill_hit_color(temp_voxel);
+                                        closest = get_distance(temp_voxel);
+                                        continue;
+                                    }
+                                    for (int i_5 = 0; i_5 < level_5.length(); i_5++) {
+                                        if (level_5[i_5]== UINT_MAX) continue;
+                                        temp_voxel = voxel_data.data[level_5[i_5]];
+                                        const uint[8] level_6 = get_children_indices(temp_voxel);
+                                        if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                        if (is_leaf_node(temp_voxel)) {
+                                            ret_val = fill_hit_color(temp_voxel);
+                                            closest = get_distance(temp_voxel);
+                                            continue;
+                                        }
+                                        for (int i_6 = 0; i_6 < level_6.length(); i_6++) {
+                                            if (level_6[i_6]== UINT_MAX) continue;
+                                            temp_voxel = voxel_data.data[level_6[i_6]];
+                                            const uint[8] level_7 = get_children_indices(temp_voxel);
+                                            if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                            if (is_leaf_node(temp_voxel)) {
+                                                ret_val = fill_hit_color(temp_voxel);
+                                                closest = get_distance(temp_voxel);
+                                                continue;
+                                            }
+                                            for (int i_7 = 0; i_7 < level_7.length(); i_7++) {
+                                                if (level_7[i_7]== UINT_MAX) continue;
+                                                temp_voxel = voxel_data.data[level_7[i_7]];
+                                                const uint[8] level_8 = get_children_indices(temp_voxel);
+                                                if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                if (is_leaf_node(temp_voxel)) {
+                                                    ret_val = fill_hit_color(temp_voxel);
+                                                    closest = get_distance(temp_voxel);
+                                                    continue;
+                                                }
+                                                for (int i_8 = 0; i_8 < level_8.length(); i_8++) {
+                                                    if (level_8[i_8]== UINT_MAX) continue;
+                                                    temp_voxel = voxel_data.data[level_8[i_8]];
+                                                    const uint[8] level_9 = get_children_indices(temp_voxel);
+                                                    if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                    if (is_leaf_node(temp_voxel)) {
+                                                        ret_val = fill_hit_color(temp_voxel);
+                                                        closest = get_distance(temp_voxel);
+                                                        continue;
+                                                    }
+                                                    for (int i_9 = 0; i_9 < level_9.length(); i_9++) {
+                                                        if (level_9[i_9] == UINT_MAX) continue;
+                                                        temp_voxel = voxel_data.data[level_9[i_9]];
+                                                        const uint[8] level_10 = get_children_indices(temp_voxel);
+                                                        if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                        if (is_leaf_node(temp_voxel)) {
+                                                            ret_val = fill_hit_color(temp_voxel);
+                                                            closest = get_distance(temp_voxel);
+                                                            continue;
+                                                        }
+                                                        for (int i_10 = 0; i_10 < level_10.length(); i_10++) {
+                                                            if (level_10[i_10] == UINT_MAX) continue;
+                                                            temp_voxel = voxel_data.data[level_10[i_10]];
+                                                            const uint[8] level_11 = get_children_indices(temp_voxel);
+                                                            if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                            if (is_leaf_node(temp_voxel)) {
+                                                                ret_val = fill_hit_color(temp_voxel);
+                                                                closest = get_distance(temp_voxel);
+                                                                continue;
+                                                            }
+                                                            for (int i_11 = 0; i_11 < level_11.length(); i_11++) {
+                                                                if (level_11[i_11] == UINT_MAX) continue;
+                                                                temp_voxel = voxel_data.data[level_11[i_11]];
+                                                                const uint[8] level_12 = get_children_indices(temp_voxel);
+                                                                if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                                if (is_leaf_node(temp_voxel)) {
+                                                                    ret_val = fill_hit_color(temp_voxel);
+                                                                    closest = get_distance(temp_voxel);
+                                                                    continue;
+                                                                }
+                                                                for (int i_12 = 0; i_12 < level_12.length(); i_12++) {
+                                                                    if (level_12[i_12] == UINT_MAX) continue;
+                                                                    temp_voxel = voxel_data.data[level_12[i_12]];
+                                                                    const uint[8] level_13 = get_children_indices(temp_voxel);
+                                                                    if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                                    if (is_leaf_node(temp_voxel)) {
+                                                                        ret_val = fill_hit_color(temp_voxel);
+                                                                        closest = get_distance(temp_voxel);
+                                                                        continue;
+                                                                    }
+                                                                    for (int i_13 = 0; i_13 < level_13.length(); i_13++) {
+                                                                        if (level_13[i_13] == UINT_MAX) continue;
+                                                                        temp_voxel = voxel_data.data[level_13[i_13]];
+                                                                        const uint[8] level_14 = get_children_indices(temp_voxel);
+                                                                        if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                                        if (is_leaf_node(temp_voxel)) {
+                                                                            ret_val = fill_hit_color(temp_voxel);
+                                                                            closest = get_distance(temp_voxel);
+                                                                            continue;
+                                                                        }
+                                                                        for (int i_14 = 0; i_14 < level_14.length(); i_14++) {
+                                                                            if (level_14[i_14] == UINT_MAX) continue;
+                                                                            temp_voxel = voxel_data.data[level_14[i_14]];
+                                                                            const uint[8] level_15 = get_children_indices(temp_voxel);
+                                                                            if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                                            if (is_leaf_node(temp_voxel)) {
+                                                                                ret_val = fill_hit_color(temp_voxel);
+                                                                                closest = get_distance(temp_voxel);
+                                                                                continue;
+                                                                            }
+                                                                            for (int i_15 = 0; i_15 < level_15.length(); i_15++) {
+                                                                                if (level_15[i_15] == UINT_MAX) continue;
+                                                                                temp_voxel = voxel_data.data[level_15[i_15]];
+                                                                                const uint[8] level_16 = get_children_indices(temp_voxel);
+                                                                                if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                                                if (is_leaf_node(temp_voxel)) {
+                                                                                    ret_val = fill_hit_color(temp_voxel);
+                                                                                    closest = get_distance(temp_voxel);
+                                                                                    continue;
+                                                                                }
+                                                                                for (int i_16 = 0; i_16 < level_16.length(); i_16++) {
+                                                                                    if (level_16[i_16] == UINT_MAX) continue;
+                                                                                    temp_voxel = voxel_data.data[level_16[i_16]];
+                                                                                    if (!slabs(temp_voxel, ray, invRaydir) || !is_closer(temp_voxel, closest)) continue;
+                                                                                    if (is_leaf_node(temp_voxel)) {
+                                                                                        ret_val = fill_hit_color(temp_voxel);
+                                                                                        closest = get_distance(temp_voxel);
+                                                                                        continue;
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
-                
-                if (!ret_val.hit) ret_val.color = clear_col;
             
                 return ret_val;
             }
             
+            
             // Main         
             void main() {
                 ivec2 IDxy = ivec2(gl_GlobalInvocationID.xy);
-            
-                Camera camera;
-                camera.field_of_view = rawCameraData.field_of_view;
-                camera.aspectRatio = rawCameraData.aspectRatio;
-                camera.fov_tan = rawCameraData.fov_tan;
-                camera.camera_to_world = rawCameraData.raw_camera_to_world;
-                camera.clear_color = rawCameraData.clear_color;
                 
-                ivec2 screenSize = imageSize(img_out);
-                vec2 pixel_NCD = vec2((float(IDxy.x)+0.5)/float(screenSize.x), (float(IDxy.y)+0.5)/float(screenSize.y));
-                vec2 camera_pixel = vec2((2 * pixel_NCD.x - 1) * camera.aspectRatio * camera.fov_tan, (1 - 2 * pixel_NCD.y) * camera.fov_tan);
+                const ivec2 screenSize = imageSize(img_out);
+                const vec2 pixel_NCD = vec2((float(IDxy.x)+0.5)/float(screenSize.x), (float(IDxy.y)+0.5)/float(screenSize.y));
+                const vec2 camera_pixel = vec2((2 * pixel_NCD.x - 1) * camera.aspectRatio * camera.fov_tan, (1 - 2 * pixel_NCD.y) * camera.fov_tan);
             
-                highp vec4 world_search_pos = vec4(vec3(camera_pixel.x, camera_pixel.y, -1.0), 0.0)*camera.camera_to_world;
+                const highp vec4 world_search_pos = vec4(vec3(camera_pixel.x, camera_pixel.y, -1.0), 0.0)*camera.camera_to_world;
                 highp vec3 current_search_pos = normalize(world_search_pos.xyz);
                 current_search_pos.x = -current_search_pos.x;
                 vec4 color_in_the_end = camera.clear_color;
+            
+                const Ray ray = Ray(vec3(0, 0, 0), normalize(current_search_pos));
                 
-                while (length(current_search_pos) < rawCameraData.render_distance) {
-                    ivec3 current_box = ivec3(floor(current_search_pos.x), floor(current_search_pos.y), floor(current_search_pos.z));
-                    ColorHit check = voxel_hit(current_box, camera.clear_color);
-                    if (check.hit) {
-                        color_in_the_end = check.color;
-                        break;
-                    }
-            
-                    highp float multiplier = 999.0;
-                    highp float x_mul = ceil(current_search_pos.x)/current_search_pos.x + 0.001;
-                    highp float y_mul = ceil(current_search_pos.y)/current_search_pos.y + 0.001;
-                    highp float z_mul = ceil(current_search_pos.z)/current_search_pos.z + 0.001;
-                    if (x_mul < multiplier) multiplier = x_mul;
-                    if (y_mul < multiplier) multiplier = y_mul;
-                    if (z_mul < multiplier) multiplier = z_mul;
-                    if (multiplier <= 1.0) multiplier = 1.01;
-            
-                    current_search_pos *= multiplier;
-                }
+                ColorHit check = voxel_hit(ray, camera.clear_color);
+                if (check.hit) color_in_the_end = check.color;
             
                 imageStore(img_out, IDxy, vec4(color_in_the_end.b, color_in_the_end.g, color_in_the_end.r, color_in_the_end.a));
             }
