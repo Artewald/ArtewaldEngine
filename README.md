@@ -11,4 +11,4 @@ The game engine uses a voxel-based raytracing renderer. The rendered "world" con
 - [ ] World physics
 - [ ] Procedural terrain generation
 - [ ] Add GUI for easier debugging
-- [ ] Add 3D movement
+- [x] Add 3D movement
