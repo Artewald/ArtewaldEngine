@@ -3,11 +3,11 @@ use std::{time::Instant, f32::consts::PI};
 use nalgebra::{Vector4, Vector3};
 use utils::{setup_vulkan, create_main_shader, create_sets, create_render_image};
 use vulkano::{pipeline::{ComputePipeline, Pipeline, PipelineBindPoint}, command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, CopyImageToBufferInfo, CopyImageInfo, CopyBufferToImageInfo}, sync::{self, GpuFuture, FlushError}, image::{ImageAccess}, swapchain::{self, acquire_next_image, AcquireError}};
-use winit::{event_loop::{EventLoop, ControlFlow}, event::{Event, WindowEvent, VirtualKeyCode}, dpi::PhysicalPosition};
+use winit::{event_loop::{EventLoop, ControlFlow}, event::{Event, WindowEvent, VirtualKeyCode, ElementState}, dpi::PhysicalPosition};
 
 use crate::voxel::{VoxelData};
 
-use self::utils::{create_voxel_buffer, create_raw_camera_data_buffer, CameraData};
+use self::utils::{create_voxel_buffer, create_camera_data_buffer, CameraData};
 
 mod utils;
 
@@ -31,14 +31,14 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
         |_| {}
     ).unwrap();
 
-    let raw_camera_data_buffer = create_raw_camera_data_buffer(CameraData::new(90, 1000.0, (surface.window().inner_size().width as f32)/(surface.window().inner_size().height as f32), Vector3::new(0.0, 0.0, 1.0), Vector3::new(0.0, 1.0, 0.0), Vector4::new(0.0, 0.0, 0.1884, 1.0)), vulkan_data.device.clone());
+    let camera_data_buffer = create_camera_data_buffer(CameraData::new(90, 1000.0, (surface.window().inner_size().width as f32)/(surface.window().inner_size().height as f32), Vector3::new(0.0, 0.0, 1.0), Vector3::new(0.0, 1.0, 0.0), Vector4::new(0.0, 0.0, 0.1884, 1.0), Vector3::new(-2.0, 0.0, 0.0)), vulkan_data.device.clone());
     let voxel_buffer = create_voxel_buffer(voxel_data, vulkan_data.device.clone());
     let mut render_image_data = create_render_image(&mut vulkan_data);
 
     let compute_pipeline_clone = compute_pipline.clone();
     let set_layouts = compute_pipeline_clone.layout().set_layouts();
 
-    let mut sets = create_sets(set_layouts, voxel_buffer.clone(), raw_camera_data_buffer.clone(), render_image_data.view.clone());
+    let mut sets = create_sets(set_layouts, voxel_buffer.clone(), camera_data_buffer.clone(), render_image_data.view.clone());
 
 
     // Main render loop
@@ -46,12 +46,16 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
     let mut prev_frame_end = Some(sync::now(vulkan_data.device.clone()).boxed());
     
     let mut time = Instant::now();
+    let mut delta_time = Instant::now();
 
     let mut window_focused = true;
-    //let rot_speed: f32 = 0.0001;
     let mut yaw: f32 = 0.0;
     let mut pitch: f32 = 0.2;
+    let mut look_target: Vector3<f32> = Vector3::new(0.0, 0.0, -1.0);
+    let mut movement_input: Vector3<f32> = Vector3::new(0.0, 0.0, 0.0);
+    
     let mouse_sensitivity = 1.0 / (50.0 * 50.0);
+    let movement_speed = 0.01;
 
     event_loop.run(move |event, _, control_flow| {
         match event {
@@ -86,6 +90,7 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
                     if pitch <= -PI/2.0 {
                         pitch = -PI/2.00001;
                     }
+                    look_target = Vector3::new(pitch.cos() * yaw.sin(), -pitch.sin(), pitch.cos() * yaw.cos()).normalize();
 
                     surface.window().set_cursor_position(center).unwrap();
                 }
@@ -96,9 +101,42 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
                     let button = input.virtual_keycode;
                     match button {
                         Some(btn) => {
+                            let state = input.state;
+
                             if btn == VirtualKeyCode::Escape {
                                 *control_flow = ControlFlow::Exit;
                             }
+                            
+                            if state == ElementState::Pressed {
+                                if btn == VirtualKeyCode::W {
+                                    movement_input.x = 1.0
+                                } else if btn == VirtualKeyCode::S {
+                                    movement_input.x = -1.0
+                                } else if btn == VirtualKeyCode::Space {
+                                    movement_input.y = 1.0
+                                } else if btn == VirtualKeyCode::LControl {
+                                    movement_input.y = -1.0
+                                } else if btn == VirtualKeyCode::D {
+                                    movement_input.z = 1.0
+                                } else if btn == VirtualKeyCode::A {
+                                    movement_input.z = -1.0
+                                }
+                            } else {
+                                if btn == VirtualKeyCode::W {
+                                    movement_input.x = 0.0
+                                } else if btn == VirtualKeyCode::S {
+                                    movement_input.x = 0.0
+                                } else if btn == VirtualKeyCode::Space {
+                                    movement_input.y = 0.0
+                                } else if btn == VirtualKeyCode::LControl {
+                                    movement_input.y = 0.0
+                                } else if btn == VirtualKeyCode::D {
+                                    movement_input.z = 0.0
+                                } else if btn == VirtualKeyCode::A {
+                                    movement_input.z = 0.0
+                                }
+                            }
+                            
                         }
                         None => (),
                     }
@@ -125,8 +163,8 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
                     render_image_data = create_render_image(&mut vulkan_data);
                     let compute_pipeline_cpy = compute_pipline.clone();
                     let new_set_layouts = compute_pipeline_cpy.layout().set_layouts();
-                    raw_camera_data_buffer.clone().write().unwrap().aspect_ratio = (dim.width as f32)/(dim.height as f32);
-                    sets = create_sets(new_set_layouts, voxel_buffer.clone(), raw_camera_data_buffer.clone(), render_image_data.view.clone());
+                    camera_data_buffer.clone().write().unwrap().aspect_ratio = (dim.width as f32)/(dim.height as f32);
+                    sets = create_sets(new_set_layouts, voxel_buffer.clone(), camera_data_buffer.clone(), render_image_data.view.clone());
                     recreate_swapchain = false;
                 }
 
@@ -146,7 +184,10 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
                 }
 
                 // Building the command buffer and executing it.
-                raw_camera_data_buffer.clone().write().unwrap().update_camera_dir(Vector3::new(pitch.cos() * yaw.sin(), -pitch.sin(), pitch.cos() * yaw.cos()).normalize(), Vector3::new(0.0, 1.0, 0.0));
+                camera_data_buffer.clone().write().unwrap().camera_move(movement_input, look_target, delta_time.elapsed().as_millis() as f32, movement_speed);
+                delta_time = Instant::now();
+                camera_data_buffer.clone().write().unwrap().update_camera_dir(look_target, Vector3::new(0.0, 1.0, 0.0));
+                
                 let mut builder = AutoCommandBufferBuilder::primary(vulkan_data.device.clone(), vulkan_data.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit,).unwrap();
                 builder.bind_pipeline_compute(compute_pipline.clone())
                        .bind_descriptor_sets(PipelineBindPoint::Compute, compute_pipline.clone().layout().clone(), 0, sets.clone())
@@ -180,7 +221,11 @@ pub fn setup_renderer_and_run(voxel_data: Vec<VoxelData>) {
                     print!("\x1B[2J\x1B[1;1H");
                     time = Instant::now();
                 }
-                
+
+                // Cleanup
+                // movement_input.x = 0.0;
+                // movement_input.y = 0.0;
+                // movement_input.z = 0.0;
             },
 
             _ => (),

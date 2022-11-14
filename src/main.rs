@@ -1,5 +1,3 @@
-use std::time::Instant;
-
 use nalgebra::{Vector2, Vector3, Vector4};
 use renderer::setup_renderer_and_run;
 use voxel::{Chunk};
