@@ -10,10 +10,10 @@ path = "lib/lib.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-vulkano = "0.31.1"
-vulkano-win = "0.31.0"
-vulkano-shaders = "0.31.0"
-vulkano-util = "0.31.0"
+vulkano = "0.32.1"
+vulkano-win = "0.32.0"
+vulkano-shaders = "0.32.0"
+vulkano-util = "0.32.0"
 bytemuck = "1.8.0"
 winit = "0.27.3"
 nalgebra = { version = "0.31.2", features = ["bytemuck"] }

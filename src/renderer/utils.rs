@@ -1,6 +1,8 @@
 use bytemuck::{Pod, Zeroable};
 use nalgebra::{Matrix4, Vector3, Vector4, Point3};
 use vulkano::buffer::{CpuAccessibleBuffer, BufferUsage};
+use vulkano::command_buffer::allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo};
+use vulkano::descriptor_set::allocator::{StandardDescriptorSetAllocator};
 use vulkano::descriptor_set::{PersistentDescriptorSet, WriteDescriptorSet};
 use vulkano::descriptor_set::layout::{DescriptorSetLayout, DescriptorType};
 use vulkano::device::physical::{PhysicalDeviceType};
@@ -9,11 +11,12 @@ use vulkano::image::view::{ImageView};
 use vulkano::image::{ImageUsage, SwapchainImage, ImageAccess, ImageViewAbstract, StorageImage, ImageDimensions};
 use vulkano::instance::{Instance, InstanceCreateInfo};
 use vulkano::library::VulkanLibrary;
-use vulkano::memory::pool::{PotentialDedicatedAllocation, StandardMemoryPool, StandardMemoryPoolAlloc};
+use vulkano::memory::allocator::{GenericMemoryAllocator, FreeListAllocator, GenericMemoryAllocatorCreateInfo, Threshold, BlockSize, AllocationType};
+//use vulkano::memory::pool::{PotentialDedicatedAllocation, StandardMemoryPool, StandardMemoryPoolAlloc};
 use vulkano::shader::ShaderModule;
 use vulkano::swapchain::{Surface, Swapchain, SwapchainCreateInfo, PresentMode, SwapchainCreationError};
 use vulkano::device::{Device, DeviceCreateInfo, QueueCreateInfo, Queue, DeviceExtensions};
-use vulkano_win::VkSurfaceBuild;
+use vulkano_win::{VkSurfaceBuild, create_surface_from_winit};
 use winit::dpi::PhysicalSize;
 use winit::event_loop::EventLoop;
 use winit::window::{WindowBuilder, Window};
@@ -23,17 +26,22 @@ use std::sync::Arc;
 use crate::voxel::VoxelData;
 
 pub struct VulkanData {
+    pub surface: Arc<Surface>,
+    pub window: Arc<Window>,
     pub instance: Arc<Instance>,
     pub device: Arc<Device>,
+    pub allocator: Arc<GenericMemoryAllocator<Arc<FreeListAllocator>>>,
+    pub desc_allocator: Arc<StandardDescriptorSetAllocator>,
+    pub cmd_allocator: Arc<StandardCommandBufferAllocator>,
     pub queue: Arc<Queue>,
-    pub swapchain: Arc<Swapchain<Window>>,
-    pub images: Vec<Arc<SwapchainImage<Window>>>,
+    pub swapchain: Arc<Swapchain>,
+    pub images: Vec<Arc<SwapchainImage>>,
 }
 
 pub struct RenderImageData {
     pub image: Arc<StorageImage>,
     pub buffer: Arc<CpuAccessibleBuffer<[u8]>>,
-    pub view: Arc<ImageView<StorageImage<Arc<StandardMemoryPool>>>>,
+    pub view: Arc<ImageView<StorageImage>>,
 }
 
 #[derive(Debug, Copy, Clone, Pod, Zeroable)]
@@ -66,8 +74,8 @@ impl CameraData {
                         aspect_ratio, 
                         fov_tan: (fov as f32/2.0).to_radians().tan(),
                         camera_to_world_mat: Self::create_camera_to_world_space(forward, up, position),
-                        clear_color: clear_color, 
-                        position: position,
+                        clear_color,
+                        position,
                     }
     }
 
@@ -107,7 +115,7 @@ impl CameraData {
     }
 }
 
-pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Window>>) {
+pub fn setup_vulkan(event_loop: &EventLoop<()>) -> VulkanData {
     let lib = VulkanLibrary::new().unwrap();
     let req_ext = vulkano_win::required_extensions(&lib);
 
@@ -124,7 +132,8 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
         ..DeviceExtensions::empty()
     };
 
-    let surface = WindowBuilder::new().with_title("Artewald Engine").build_vk_surface(&event_loop, instance.clone()).unwrap();
+    let window = Arc::new(WindowBuilder::new().with_title("Artewald Engine").build(&event_loop).unwrap());//.build_vk_surface(&event_loop, instance.clone()).unwrap();
+    let surface = create_surface_from_winit(window.clone(), instance.clone()).unwrap();
 
     let (physical_device, queue_family_index) = instance
         .enumerate_physical_devices()
@@ -164,7 +173,6 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
 
     let (swapchain, images) = {
         let surface_capabilities = device.physical_device().surface_capabilities(&surface, Default::default()).unwrap();
-
         let image_format = Some(device.physical_device().surface_formats(&surface, Default::default()).unwrap()[0].0);
 
         Swapchain::new(
@@ -173,7 +181,7 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
             SwapchainCreateInfo {
                 min_image_count: surface_capabilities.min_image_count,
                 image_format,
-                image_extent: surface.window().inner_size().into(),
+                image_extent: window.inner_size().into(),
                 image_usage: ImageUsage {
                     storage: true,
                     color_attachment: true,
@@ -187,15 +195,15 @@ pub fn setup_vulkan(event_loop: &EventLoop<()>) -> (VulkanData, Arc<Surface<Wind
         ).unwrap()
     };
 
-    (VulkanData { instance: instance.clone(), device: device.clone(), queue: queue.clone(), swapchain: swapchain, images: images }, surface)
+    VulkanData {surface: surface, window: window, instance: instance.clone(), device: device.clone(), allocator: Arc::new(GenericMemoryAllocator::new(device.clone(), GenericMemoryAllocatorCreateInfo {block_sizes: &[(0 as Threshold, 199_999_999 as BlockSize)], allocation_type: AllocationType::Unknown, ..Default::default()}).unwrap()), desc_allocator: Arc::new(StandardDescriptorSetAllocator::new(device.clone())), cmd_allocator: Arc::new(StandardCommandBufferAllocator::new(device.clone(), StandardCommandBufferAllocatorCreateInfo {..Default::default()})),queue: queue.clone(), swapchain: swapchain, images: images }
 }
 
-pub fn create_camera_data_buffer(data: CameraData, device: Arc<Device>) -> Arc<CpuAccessibleBuffer<CameraData>> {
-    CpuAccessibleBuffer::from_data(device.clone(), BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data).unwrap()
+pub fn create_camera_data_buffer(data: CameraData, allocator: Arc<GenericMemoryAllocator<Arc<FreeListAllocator>>>) -> Arc<CpuAccessibleBuffer<CameraData>> {
+    CpuAccessibleBuffer::from_data(allocator.as_ref(), BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data).unwrap()
 }
 
-pub fn create_voxel_buffer(data: Vec<VoxelData>, device: Arc<Device>) -> Arc<CpuAccessibleBuffer<[VoxelData], PotentialDedicatedAllocation<StandardMemoryPoolAlloc>>> {
-    CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data.into_iter()).unwrap()
+pub fn create_voxel_buffer(data: Vec<VoxelData>, allocator: Arc<GenericMemoryAllocator<Arc<FreeListAllocator>>>) -> Arc<CpuAccessibleBuffer<[VoxelData]>> {
+    CpuAccessibleBuffer::from_iter(allocator.as_ref(), BufferUsage {storage_buffer: true, ..BufferUsage::empty()}, false, data.into_iter()).unwrap()
 }
 
 pub fn recreate_swapchain(vulkan_data: &mut VulkanData, dim: PhysicalSize<u32>) {
@@ -210,7 +218,7 @@ pub fn recreate_swapchain(vulkan_data: &mut VulkanData, dim: PhysicalSize<u32>) 
 
 }
 
-pub fn create_sets(set_layouts: &[Arc<DescriptorSetLayout>], voxel_buffer: Arc<CpuAccessibleBuffer<[VoxelData]>>, misc_buffer: Arc<CpuAccessibleBuffer<CameraData>>, img_view: Arc<dyn ImageViewAbstract>) -> Vec<Arc<PersistentDescriptorSet>> {
+pub fn create_sets(desc_allocator: Arc<StandardDescriptorSetAllocator>, set_layouts: &[Arc<DescriptorSetLayout>], voxel_buffer: Arc<CpuAccessibleBuffer<[VoxelData]>>, misc_buffer: Arc<CpuAccessibleBuffer<CameraData>>, img_view: Arc<dyn ImageViewAbstract>) -> Vec<Arc<PersistentDescriptorSet>> {
     let mut sets = vec![];
 
     for set_layout in set_layouts {
@@ -222,10 +230,10 @@ pub fn create_sets(set_layouts: &[Arc<DescriptorSetLayout>], voxel_buffer: Arc<C
             }
 
             if x.1.descriptor_type == DescriptorType::StorageBuffer {
-                sets.push(PersistentDescriptorSet::new(set_layout.clone(), [WriteDescriptorSet::buffer(0, voxel_buffer.clone()), WriteDescriptorSet::buffer(1, misc_buffer.clone())]).unwrap());
+                sets.push(PersistentDescriptorSet::new(desc_allocator.clone().as_ref(), set_layout.clone(), [WriteDescriptorSet::buffer(0, voxel_buffer.clone()), WriteDescriptorSet::buffer(1, misc_buffer.clone())]).unwrap());
                 
             } else if x.1.descriptor_type == DescriptorType::StorageImage {
-                sets.push(PersistentDescriptorSet::new(set_layout.clone(), [WriteDescriptorSet::image_view(0, img_view.clone())]).unwrap())
+                sets.push(PersistentDescriptorSet::new(desc_allocator.clone().as_ref(), set_layout.clone(), [WriteDescriptorSet::image_view(0, img_view.clone())]).unwrap())
             } else {
                 panic!("There exists an unused descriptorset, it should be implemented!");
             }
@@ -239,18 +247,18 @@ pub fn create_sets(set_layouts: &[Arc<DescriptorSetLayout>], voxel_buffer: Arc<C
 
 pub fn create_render_image(vulkan_data: &mut VulkanData) -> RenderImageData {
     let image = StorageImage::new(
-        vulkan_data.device.clone(),
+        vulkan_data.allocator.clone().as_ref(),
         ImageDimensions::Dim2d {
             width: vulkan_data.images[0].dimensions().width(),
             height: vulkan_data.images[0].dimensions().height(),
             array_layers: 1,
         }, 
         Format::R8G8B8A8_UNORM,
-        Some(vulkan_data.queue.queue_family_index()),
+        Some(vulkan_data.queue.clone().queue_family_index()),
     ).unwrap();
 
     let buffer = CpuAccessibleBuffer::from_iter(
-        vulkan_data.device.clone(),
+        vulkan_data.allocator.clone().as_ref(),
         BufferUsage {
             transfer_src: true,
             transfer_dst: true,
